@@ -7,14 +7,18 @@
 // This is a tiny 3D engine made for the ATMEGA328 and a Sainsmart 1.8" TFT screen (ST7735).
 // It uses the amazingly fast Adafruit GFX library fork by XarkLabs. (github.com/XarkLabs)
 //
-// Features: - matrices for mesh transformations (rotation/translation/scaling)
-//           - fixed point to avoid using floats
-//           - 90 degrees fixed point look up table for sin/cos
-//           - backface culling using shoelace algorithm
-//           - flat colors (-unfinished/experimental/not fast enough-)
-//           - rotate the mesh with a 3 axis accelerometer (ADXL335)
-//           - rotate the mesh with a joystick thumb
-//           - push button on digital PIN 2 to change the render type.
+// Arduino - Tiny 3D Engine
+// ------------------------
+// by Themistokle "mrt-prodz" Benetatos
+// **modded by james villenueve with faster multiply, and faster surfae shading and faster screen clear
+// **screen clear in clear_dirty about 50% faster because avoids extra jmp loops for spi bit check and switches draw to direct using specific timing.
+// **mMultiply switched to additon and bit shift with less checks than optcode for a guess of 2x-4x improvement in multiply
+// **fast multiply function for 8 bit math with int_16 added for faster math of surface and hidden triangle solves
+// **a few other tricks that eliminate the need for mem copy store...
+// **on ST7735 128x160 display does monkey with 233 triangles at 3fps filled triangle 
+// **on T7735 128x160 display does 5fps wired triangle monkey 233 triangles
+// This is a tiny 3D engine made for the ATMEGA328 and a Sainsmart 1.8" TFT screen (ST7735).
+// It uses the amazingly fast Adafruit GFX library fork by XarkLabs. (github.com/XarkLabs)
 //
 // Not implemented: - clipping
 //                  - view/projection matrices (projection is done on world matrix directly)
@@ -49,20 +53,22 @@
 // ----------------------------------------------
 #include "type.h"
 #include <SPI.h>
-#include <PDQ_GFX.h>
+#include "PDQ_GFX.h"
 #include "PDQ_ST7735_config.h"
-#include <PDQ_ST7735.h>
+#include "PDQ_ST7735.h"
+#include "PDQ_FastPin.h"
+
 PDQ_ST7735 TFT = PDQ_ST7735();
 
 // ----------------------------------------------
 // meshes
 // ----------------------------------------------
 // uncomment 1 header to automatically load mesh
-#include "mesh_cube.h"
+//#include "mesh_cube.h"
 //#include "mesh_cone.h"
 //#include "mesh_sphere.h"
 //#include "mesh_torus.h"
-//#include "mesh_monkey.h"
+#include "mesh_monkey.h"
 
 // ----------------------------------------------
 // defines
@@ -87,7 +93,7 @@ PDQ_ST7735 TFT = PDQ_ST7735();
 #define COLOR7 ST7735_MAGENTA
 
 #define NUMTYPES 4                           // number of render types
-#define LUT(a) (long)(pgm_read_word(&lut[a]))// return value from LUT in PROGMEM
+//#define LUT(a) (long)(pgm_read_word(&lut[a]))// return value from LUT in PROGMEM
 
 //#define USE_ACCELEROMETER                  // uncomment this to enable accelerometer
 #ifdef USE_ACCELEROMETER
@@ -109,36 +115,37 @@ Matrix4 m_world;
 Vector3i mesh_rotation = {0, 0, 0};
 Vector3i mesh_position = {0, 0, 0};
 
-const unsigned int lut[] PROGMEM = {         // 0 to 90 degrees fixed point COSINE look up table
+int LUT[] = {         // 0 to 90 degrees fixed point COSINE look up table
   16384, 16381, 16374, 16361, 16344, 16321, 16294, 16261, 16224, 16182, 16135, 16082, 16025, 15964, 15897, 15825, 15749, 15668, 15582, 15491, 15395, 15295, 15190, 15081, 14967, 14848, 14725, 14598, 14466, 14329, 14188, 14043, 13894, 13740, 13582, 13420, 13254, 13084, 12910, 12732, 12550, 12365, 12175, 11982, 11785, 11585, 11381, 11173, 10963, 10748, 10531, 10310, 10086, 9860, 9630, 9397, 9161, 8923, 8682, 8438, 8191, 7943, 7691, 7438, 7182, 6924, 6663, 6401, 6137, 5871, 5603, 5334, 5062, 4790, 4516, 4240, 3963, 3685, 3406, 3126, 2845, 2563, 2280, 1996, 1712, 1427, 1142, 857, 571, 285, 0
 };
 
 static int proj_nodes[NODECOUNT][2];         // projected nodes (x,y)
-static int old_nodes[NODECOUNT][2];          // projected nodes of previous frame to check if we need to redraw
+
+//static int old_nodes[NODECOUNT][2];          // projected nodes of previous frame to check if we need to redraw
 static unsigned char i;
 static int loops;
 static double next_tick;
 static double last_btn;                      // used for checking when the button was last pushed
-static unsigned char draw_type = 0;          // 0 - vertex | 1 - wireframe | 2 - flat colors | ...
+static unsigned char draw_type = 2;          // 0 - vertex | 1 - wireframe | 2 - flat colors | ...
 
 // ----------------------------------------------
 // SIN/COS from 90 degrees LUT
 // ----------------------------------------------
-long SIN(unsigned int angle) {
+int16_t SIN(int16_t angle) {
   angle += 90;
-  if (angle > 450) return LUT(0);
-  if (angle > 360 && angle < 451) return -LUT(angle-360);
-  if (angle > 270 && angle < 361) return -LUT(360-angle);
-  if (angle > 180 && angle < 271) return  LUT(angle-180);
-  return LUT(180-angle);
+  if (angle > 450) return LUT[(int8_t)(0)];
+  if (angle > 360 && angle < 451) return -LUT[(int8_t)(angle-360)];
+  if (angle > 270 && angle < 361) return -LUT[(int8_t)(360-angle)];
+  if (angle > 180 && angle < 271) return  LUT[(int8_t)(angle-180)];
+  return LUT[(int8_t)(180-angle)];
 }
 
-long COS(unsigned int angle) {
-  if (angle > 360) return LUT(0);
-  if (angle > 270 && angle < 361) return  LUT(360-angle);
-  if (angle > 180 && angle < 271) return -LUT(angle-180);
-  if (angle > 90  && angle < 181) return -LUT(180-angle);
-  return LUT(angle);
+int16_t COS(unsigned int angle) {
+  if (angle > 360) return LUT[(int8_t)(0)];
+  if (angle > 270 && angle < 361) return  LUT[(int8_t)(360-angle)];
+  if (angle > 180 && angle < 271) return -LUT[(int8_t)(angle-180)];
+  if (angle > 90  && angle < 181) return -LUT[(int8_t)(180-angle)];
+  return LUT[(int8_t)(angle)];
 }
 
 // ----------------------------------------------
@@ -204,13 +211,17 @@ Matrix4 mScale(const float ratio) {
 // ----------------------------------------------
 int shoelace(const int (*n)[2], const unsigned char index) {
   unsigned char t = 0;
-  int surface = 0;
+  int16_t surface = 0;
   for (; t<3; t++) {
     // (x1y2 - y1x2) + (x2y3 - y2x3) ...
-    surface += (n[EDGE(index,t)][0]           * n[EDGE(index,(t<2?t+1:0))][1]) -
-               (n[EDGE(index,(t<2?t+1:0))][0] * n[EDGE(index,t)][1]);
+    surface += fast_8unit_multi(n[EDGE(index,t)][0] , n[EDGE(index,(t<2?t+1:0))][1]) -
+               fast_8unit_multi(n[EDGE(index,(t<2?t+1:0))][0] , n[EDGE(index,t)][1]);
   }
-  return surface * 0.5;
+  //return (surface*0.5);
+  if (surface>0){return (int16_t) ((uint16_t)(surface)>>1);}else{return 0-((int16_t) ((uint16_t)(surface)>>1));}
+  
+  
+  
 }
 
 // ----------------------------------------------
@@ -218,12 +229,12 @@ int shoelace(const int (*n)[2], const unsigned char index) {
 // ----------------------------------------------
 bool is_hidden(const int (*n)[2], const unsigned char index) {
   // (x1y2 - y1x2) + (x2y3 - y2x3) ...
-  return ( ( (n[EDGE(index,0)][0] * n[EDGE(index,1)][1]) -
-             (n[EDGE(index,1)][0] * n[EDGE(index,0)][1])   ) +
-           ( (n[EDGE(index,1)][0] * n[EDGE(index,2)][1]) -
-             (n[EDGE(index,2)][0] * n[EDGE(index,1)][1])   ) +
-           ( (n[EDGE(index,2)][0] * n[EDGE(index,0)][1]) -
-             (n[EDGE(index,0)][0] * n[EDGE(index,2)][1])   ) ) < 0 ? false : true;
+  return ( ( fast_8unit_multi(n[EDGE(index,0)][0] , n[EDGE(index,1)][1]) -
+             fast_8unit_multi(n[EDGE(index,1)][0] , n[EDGE(index,0)][1])   ) +
+           ( fast_8unit_multi(n[EDGE(index,1)][0] , n[EDGE(index,2)][1]) -
+             fast_8unit_multi(n[EDGE(index,2)][0] , n[EDGE(index,1)][1])   ) +
+           ( fast_8unit_multi(n[EDGE(index,2)][0] , n[EDGE(index,0)][1]) -
+             fast_8unit_multi(n[EDGE(index,0)][0] , n[EDGE(index,2)][1])   ) ) < 0 ? false : true;
 }
 
 // ----------------------------------------------
@@ -248,6 +259,7 @@ void draw_wireframe(const int (*n)[2], const uint16_t color) {
       TFT.drawLine(n[EDGE(i,0)][0], n[EDGE(i,0)][1], n[EDGE(i,1)][0], n[EDGE(i,1)][1], color);
       TFT.drawLine(n[EDGE(i,1)][0], n[EDGE(i,1)][1], n[EDGE(i,2)][0], n[EDGE(i,2)][1], color);
       TFT.drawLine(n[EDGE(i,2)][0], n[EDGE(i,2)][1], n[EDGE(i,0)][0], n[EDGE(i,0)][1], color);
+      
     }
   } while(i--);
 }
@@ -255,17 +267,28 @@ void draw_wireframe(const int (*n)[2], const uint16_t color) {
 // ----------------------------------------------
 // draw flat color (not flat shading)
 // ----------------------------------------------
+
 void draw_flat_color(const int (*n)[2], uint16_t color) {
   i = TRICOUNT-1;
   int surface;
   uint16_t col = color;
+  while (col &0b1100011100011000 !=color &0b1100011100011000){col -=0b0000100000100001;};//re reduce color to prevent sarturation
+  
+  uint16_t  toadd=0b0000000001000000;//we make sure at least green is present
+  
   do {
     // draw only triangles facing us
     if ((surface=shoelace(n, i)) < 0) {
       // this is an ugly hack but it 'somehow' fakes shading
       // depending on the size of the surface of the triangle
       // change the color toward brighter/darker
-      color = col * (surface * 0.001);
+          uint8_t cols=8-((lowByte(surface))&0b00000111);//1to7 brightness
+     //Serial.println(cols);
+  //we unroll. should not+ require jmps.. not sure 
+    do{col+=toadd;}//rgb 565 //we mod the green for brightness
+  while (cols--);//if more then 4...
+  
+  color = col ;
 
       TFT.fillTriangle(n[EDGE(i,0)][0], n[EDGE(i,0)][1],
                        n[EDGE(i,1)][0], n[EDGE(i,1)][1],
@@ -279,6 +302,14 @@ void draw_flat_color(const int (*n)[2], uint16_t color) {
 // clear frame using bounding box (dirty mask)
 // ----------------------------------------------
 void clear_dirty(const int (*n)[2]) {
+
+#define padding 10 //we overcompinsate as frame is from previous frame now to save memory
+//we are creating a new command called  clearpixel_quick
+#define delay_1nop __asm__("nop\n\t");//dirty but fluid. screen clear should be about 50% faster. we remove the if(SPRD)
+#define delay_2nop delay_1nop; delay_1nop // check and use jmp delay and timning to sync data.
+#define delay_4nop delay_2nop;delay_2nop;
+#define delay_9nop delay_4nop;delay_4nop;delay_1nop;
+#define clearpixel_quick delay_2nop;delay_1nop; SPDR= lowByte (COLOR0);delay_4nop;delay_1nop;SPDR= highByte(COLOR0);
   unsigned char x0=SCREENW, y0=SCREENH, x1=0, y1=0, c, w, h;
   // get bounding box of mesh
   for (c=0; c<NODECOUNT; c++) {
@@ -289,14 +320,20 @@ void clear_dirty(const int (*n)[2]) {
   }
   // clear area
   TFT.spi_begin();
+
+  x0-=padding;y0-=padding;x1+=padding;y1+=padding;
   TFT.setAddrWindow_(x0, y0, x1, y1);
   h = (y1-y0);
   w = (x1-x0)+1;
   do {
-    TFT.spiWrite16(COLOR0, w);
+  do {
+   // TFT.spiWrite16(COLOR0, w);//too slow
+ clearpixel_quick; 
   } while (h--);
+  } while (w--);
   TFT.spi_end();
 }
+
 
 // ----------------------------------------------
 // write current drawing mode in corner of screen
@@ -336,9 +373,9 @@ void draw_print(const int16_t color) {
 // setup
 // ----------------------------------------------
 void setup() {
-  #ifdef DEBUG
-    Serial.begin(57600);
-  #endif
+  //#ifdef DEBUG
+    Serial.begin(9600);
+  //#endif
   // initialize the push button on pin 2 as an input
   DDRD &= ~(1<<PD2);
   // initialize screen
@@ -355,11 +392,15 @@ void setup() {
 // ----------------------------------------------
 void loop() {
   loops = 0;
+
+  
+  
   while( millis() > next_tick && loops < MAX_FRAMESKIP) {
     // ===============
     // input
     // ===============
     // push button on digital PIN 2 to change render type
+   
     if ( !(PIND & (1<<PD2)) && (millis()-last_btn) > 300 ) {
       // clear screen
       TFT.fillScreen(COLOR0);
@@ -371,7 +412,7 @@ void loop() {
       // update last button push
       last_btn = millis();
     }
-
+    
     // rotation
     m_world = mRotateX(mesh_rotation.x);
     m_world = mMultiply(mRotateY(mesh_rotation.y), m_world);
@@ -381,25 +422,31 @@ void loop() {
 
     // project nodes with world matrix
     Vector3i p;
+    float inverse_PRES =1.0/PRES;
     for (i=0; i<NODECOUNT; i++) {
-      p.x = (m_world.m[0][0] * (NODE(i,0) >> PSHIFT)+
-             m_world.m[1][0] * (NODE(i,1) >> PSHIFT) +
-             m_world.m[2][0] * (NODE(i,2) >> PSHIFT) +
-             m_world.m[3][0]) / PRES;
+     long temp0=(NODE(i,0) >> PSHIFT);
+     long temp1=(NODE(i,1) >> PSHIFT);
+     long temp2=(NODE(i,2) >> PSHIFT);
+
+      p.x = (m_world.m[0][0] * temp0 +
+             m_world.m[1][0] * temp1 +
+             m_world.m[2][0] * temp2 +
+             m_world.m[3][0]) *inverse_PRES;
       
-      p.y = (m_world.m[0][1] * (NODE(i,0) >> PSHIFT) +
-             m_world.m[1][1] * (NODE(i,1) >> PSHIFT) +
-             m_world.m[2][1] * (NODE(i,2) >> PSHIFT) +
-             m_world.m[3][1]) / PRES;
+      p.y = (m_world.m[0][1] * temp0 +
+             m_world.m[1][1] * temp1 +
+             m_world.m[2][1] * temp2 +
+             m_world.m[3][1]) *inverse_PRES;
             
-      p.z = (m_world.m[0][2] * (NODE(i,0) >> PSHIFT) +
-             m_world.m[1][2] * (NODE(i,1) >> PSHIFT) +
-             m_world.m[2][2] * (NODE(i,2) >> PSHIFT) +
-             m_world.m[3][2]) / PRES;
+      p.z = (m_world.m[0][2] * temp0 +
+             m_world.m[1][2] * temp1 +
+             m_world.m[2][2] * temp2 +
+             m_world.m[3][2]) *inverse_PRES;
 
       // store projected node
-      proj_nodes[i][0] = (FOV * p.x) / (FOV + p.z) + HALFW;
-      proj_nodes[i][1] = (FOV * p.y) / (FOV + p.z) + HALFH;
+      float inverse_FOV_PZ= 1.0/(FOV + p.z);
+      proj_nodes[i][0] = (FOV * p.x) *inverse_FOV_PZ + HALFW;
+      proj_nodes[i][1] = (FOV * p.y) *inverse_FOV_PZ + HALFH;
     }
 
     #ifdef USE_ACCELEROMETER
@@ -429,27 +476,26 @@ void loop() {
   // ===============
   // draw
   // ===============
-  // only redraw if nodes position have changed (less redraw - less flicker)
-  if (memcmp(old_nodes, proj_nodes, sizeof(proj_nodes))) {
-    // render frame
+ 
+    // render frame clering
     switch(draw_type) {
-      case 0: draw_vertex(old_nodes, COLOR0);
+      case 0: clear_dirty(proj_nodes);
               draw_vertex(proj_nodes, COLOR1);
               break;
-      case 1: if (TRICOUNT > 32) clear_dirty(old_nodes);
-              else draw_wireframe(old_nodes, COLOR0);
+      case 1: clear_dirty(proj_nodes);
               draw_wireframe(proj_nodes, COLOR1);
+              //delay(100);
               break;
-      case 2: clear_dirty(old_nodes);
-              draw_flat_color(proj_nodes, COLOR2);
+      case 2: clear_dirty(proj_nodes);
+              draw_flat_color(proj_nodes, COLOR4);
+              
               break;
-      case 3: draw_flat_color(proj_nodes, COLOR2);
-              draw_wireframe(proj_nodes, COLOR0);
+      case 3: clear_dirty(proj_nodes);
+              draw_flat_color(proj_nodes, COLOR4);        
               break;
       case 4: draw_flat_color(proj_nodes, COLOR2);
               break;
-    }
-    // copy projected nodes to old_nodes to check if we need to redraw next frame
-    memcpy(old_nodes, proj_nodes, sizeof(proj_nodes));
+  // copy projected nodes to old_nodes to check if we need to redraw next frame
+//    memcpy(old_nodes, proj_nodes, sizeof(proj_nodes));
   }
 }
