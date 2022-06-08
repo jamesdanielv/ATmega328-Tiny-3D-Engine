@@ -37,15 +37,18 @@ static long pMultiply(int32_t x, int32_t y) {
  
 //return ( (x * y) + PROUNDBIT) >> PSHIFT;
 bool NEG_SIGN;
-if (x>y){int32_t temp=x;x=y;y=temp;}//we push lower value to x
+
 if (x<0 & y>0){NEG_SIGN=true;}//if both negative it is posative, so we only want neg if x is negative.
 if (x>0 & y<0){NEG_SIGN=true;}//if both negative it is posative
-uint32_t total=0;
+//x=x& 0b011111111111111111111111111111111;//we do abs //no check on last bit anyways..
+//y=y& 0b011111111111111111111111111111111;//we do abs //so no need to do abs......
+uint32_t total=0;                          //we just dont check sign bit in algorithum.
 uint32_t accum=y;
-if (x<1<<15){
+if (y>x){uint32_t accum=x,x=y;}//we move lower number to x and larger to accum 
+if (x<1<<15){//if x fits in 16 bits we do 16bit numbers...
 uint16_t temp_x;//we make unsigned for now..
 }
-else{
+else{//if x needs 32 bits we store all 32 bits.
 uint32_t temp_x;//we make unsigned for now..  
 }
 if (x&0b00000000000000000000000000000001){total=total+accum;};accum=accum+accum;//we double
@@ -64,7 +67,7 @@ if (x&0b00000000000000000001000000000000){total=total+accum;};accum=accum+accum;
 if (x&0b00000000000000000010000000000000){total=total+accum;};accum=accum+accum;//we double
 if (x&0b00000000000000000100000000000000){total=total+accum;};accum=accum+accum;//we double
 if (x&0b00000000000000001000000000000000){total=total+accum;};accum=accum+accum;//we double
-if( x> 1<<15){
+if( x> 1<<15){//if x is 32bit number we process 32 bits path.
 if (x&0b00000000000000010000000000000000){total=total+accum;};accum=accum+accum;//we double
 if (x&0b00000000000000100000000000000000){total=total+accum;};accum=accum+accum;//we double
 if (x&0b00000000000001000000000000000000){total=total+accum;};accum=accum+accum;//we double
@@ -80,12 +83,18 @@ if (x&0b00001000000000000000000000000000){total=total+accum;};accum=accum+accum;
 if (x&0b00010000000000000000000000000000){total=total+accum;};accum=accum+accum;//we double
 if (x&0b00100000000000000000000000000000){total=total+accum;};accum=accum+accum;//we double
 if (x&0b01000000000000000000000000000000){total=total+accum;};accum=accum+accum;//we double
-if (x&0b10000000000000000000000000000000){total=total+accum;};accum=accum+accum;//we double
+//if (x&0b10000000000000000000000000000000){total=total+accum;};//int32_t turne to unit32_t.. no chance upper bit set other than sign.
 }
- if (NEG_SIGN){ return -int16_t(( total + PROUNDBIT) >> PSHIFT);}else{return int16_t(( total + PROUNDBIT) >> PSHIFT);}
+  //we send out 16 bits but it could als do long... just the answer currently is 16bit
+  //decided to allow longs again if data shift is lesser than 14bits (equivlent to dividing by 15 bits in a singed number)
+#if PSHIFT > (1<<14)-1
+if (NEG_SIGN){ return -int32_t(( total + PROUNDBIT) >> PSHIFT);}else{return int32_t(( total + PROUNDBIT) >> PSHIFT);}
+#else
+ if (NEG_SIGN){ return -int32_t(( total + PROUNDBIT) >> PSHIFT);}else{return int32_t(( total + PROUNDBIT) >> PSHIFT);}
+#endif 
 }
 
-int16_t fast_8unit_multi(uint8_t x, uint8_t y){
+int16_t fast_8unit_multi(uint8_t x, uint8_t y){//useful for hidden triangle and some other functions
   uint16_t accumulator=0;
   uint16_t solver=x;
  if (y&0b00000001){ accumulator+=solver;};solver=solver+solver;
