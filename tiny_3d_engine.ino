@@ -10,10 +10,11 @@
 // Arduino - Tiny 3D Engine
 // ------------------------
 // by Themistokle "mrt-prodz" Benetatos
-// **modded by james villenueve with faster multiply, and faster surfae shading and faster screen clear
-// **screen clear in clear_dirty about 50% faster because avoids extra jmp loops for spi bit check and switches draw to direct using specific timing.
-// **mMultiply switched to additon and bit shift with less checks than optcode for a guess of 2x-4x improvement in multiply
-// **fast multiply function for 8 bit math with int_16 added for faster math of surface and hidden triangle solves
+// ** modded by james villenueve 
+// **with faster multiply, and faster surface shading and faster screen clear, experimental surface coloring (blue works)
+// ** screen clear in clear_dirty about 50% faster because avoids extra jmp loops for spi bit check and switches draw to direct using specific timing.
+// ** mMultiply switched to additon and bit shift with less checks than optcode for a guess of 2x-4x improvement in multiply
+// **fast multiply function for 8 bit math with accum answer in int_16 added for faster math of surface and hidden triangle solves
 // **a few other tricks that eliminate the need for mem copy store...
 // **on ST7735 128x160 display does monkey with 233 triangles at 3fps filled triangle 
 // **on T7735 128x160 display does 5fps wired triangle monkey 233 triangles
